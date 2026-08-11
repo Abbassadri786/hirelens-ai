@@ -1,0 +1,228 @@
+# ============================================================
+# HireLens AI — Root .gitignore
+# Monorepo: frontend/ + backend/ + Docker/YAML
+# ============================================================
+
+# ------------------------------------------------------------
+# OS / Editor
+# ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.history/
+
+# ------------------------------------------------------------
+# Environment / Secrets — NEVER COMMIT
+# ------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.template
+
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Local secret/config files
+secrets/
+credentials/
+*.secret
+*.secrets
+service-account*.json
+
+# ------------------------------------------------------------
+# Logs / Runtime
+# ------------------------------------------------------------
+*.log
+logs/
+*.pid
+*.pid.lock
+
+# ------------------------------------------------------------
+# Python / FastAPI — backend/
+# ------------------------------------------------------------
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.py[cod]
+backend/**/[!migrations]*.py[cod]
+
+# Python cache / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Virtual environments
+backend/.venv/
+backend/venv/
+backend/env/
+backend/.env/
+venv/
+env/
+
+# Python build/package artifacts
+backend/build/
+backend/dist/
+backend/*.egg-info/
+backend/**.egg-info/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ------------------------------------------------------------
+# Resume uploads / user-generated files
+# IMPORTANT: Do NOT commit real candidate resumes or PII
+# ------------------------------------------------------------
+backend/storage/
+backend/uploads/
+backend/media/
+backend/tmp/
+backend/var/
+storage/
+uploads/
+media/
+
+# Allow the directory to exist in Git without its contents
+!backend/storage/.gitkeep
+!backend/uploads/.gitkeep
+
+# ------------------------------------------------------------
+# Database / local development data
+# ------------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.dump
+*.bak
+
+# PostgreSQL local data / Docker volumes if created in repo
+postgres-data/
+pgdata/
+data/postgres/
+backend/data/
+
+# ------------------------------------------------------------
+# Node / Next.js — frontend/
+# ------------------------------------------------------------
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+frontend/.turbo/
+frontend/.vercel/
+
+# npm / yarn / pnpm debug logs
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+
+# Package manager cache
+frontend/.npm/
+frontend/.yarn/cache/
+frontend/.yarn/unplugged/
+frontend/.pnpm-store/
+
+# TypeScript
+frontend/*.tsbuildinfo
+frontend/**/*.tsbuildinfo
+
+# ------------------------------------------------------------
+# Frontend environment files
+# ------------------------------------------------------------
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+!frontend/.env.template
+
+# ------------------------------------------------------------
+# Testing / coverage
+# ------------------------------------------------------------
+frontend/coverage/
+frontend/.nyc_output/
+backend/coverage/
+test-results/
+playwright-report/
+blob-report/
+
+# ------------------------------------------------------------
+# Docker / Compose generated files
+# ------------------------------------------------------------
+docker-compose.override.yml
+docker-compose.local.yml
+
+# Docker secrets
+docker-secrets/
+*.docker-secret
+
+# ------------------------------------------------------------
+# AI / ML / model artifacts
+# ------------------------------------------------------------
+models/
+model_cache/
+hf_cache/
+huggingface/
+.transformers/
+.cache/huggingface/
+*.safetensors
+*.gguf
+*.ggml
+*.onnx
+
+# ------------------------------------------------------------
+# Generated documents / exports
+# ------------------------------------------------------------
+exports/
+generated/
+reports/
+*.tmp
+
+# ------------------------------------------------------------
+# Terraform / infrastructure state (if added later)
+# ------------------------------------------------------------
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Keep Terraform variable examples, ignore real variables
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# ------------------------------------------------------------
+# Misc build/cache
+# ------------------------------------------------------------
+.cache/
+.parcel-cache/
+.eslintcache
+
+# ------------------------------------------------------------
+# Local tooling
+# ------------------------------------------------------------
+.vercel/
