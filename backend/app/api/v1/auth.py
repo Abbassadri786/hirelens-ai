@@ -140,11 +140,23 @@ def login(payload: LoginRequest, response: Response, db: DbSession):
 
 
 @router.get("/csrf")
-def csrf():
-    # A new CSRF token is created during auth-cookie issuance.
-    # This endpoint is intentionally lightweight for clients that need a token
-    # before their first authenticated mutation.
-    return {"message": "Login or register to receive a CSRF token cookie."}
+def csrf(response: Response):
+    import secrets
+
+    from app.core.security import CSRF_COOKIE
+
+    token = secrets.token_urlsafe(32)
+    response.set_cookie(
+        CSRF_COOKIE,
+        token,
+        max_age=settings.REFRESH_TOKEN_DAYS * 24 * 60 * 60,
+        httponly=False,
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.COOKIE_SAMESITE,
+        domain=settings.COOKIE_DOMAIN,
+        path='/',
+    )
+    return {'message': 'CSRF token initialized'}
 
 
 @router.post("/refresh", response_model=UserResponse, dependencies=[Depends(require_csrf)])

@@ -91,3 +91,89 @@ export const api = {
       method: "POST",
     }),
 };
+
+export type Job = {
+  id: string;
+  title: string;
+  description: string;
+  location: string | null;
+  employment_type: string | null;
+  min_experience_years: number | null;
+  status: "DRAFT" | "PUBLISHED" | "CLOSED" | "ARCHIVED";
+  is_public: boolean;
+  created_at: string;
+  required_skills: string[];
+  preferred_skills: string[];
+};
+
+export type Application = {
+  id: string;
+  job_id: string;
+  candidate_id: string;
+  resume_id: string;
+  status: string;
+  submitted_at: string;
+
+  candidate: {
+    id: string;
+    full_name: string;
+    email: string;
+    phone: string | null;
+    location: string | null;
+    summary: string | null;
+    created_at: string;
+  };
+
+  resume: {
+    id: string;
+    original_filename: string;
+    file_type: string;
+    mime_type: string;
+    file_size: number;
+    status: string;
+    created_at: string;
+  };
+};
+
+export const jobsApi = {
+  list: () => request<Job[]>("/api/v1/jobs"),
+
+  publicList: () => request<Job[]>("/api/v1/jobs/public"),
+
+  getPublic: (id: string) =>
+    request<Job>(`/api/v1/jobs/public/${id}`),
+
+  create: (payload: {
+    title: string;
+    description: string;
+    location?: string;
+    employment_type?: string;
+    min_experience_years?: number;
+    required_skills: string[];
+    preferred_skills: string[];
+  }) =>
+    request<Job>("/api/v1/jobs", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  update: (id: string, payload: Record<string, unknown>) =>
+    request<Job>(`/api/v1/jobs/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+};
+
+export const applicationsApi = {
+  list: () =>
+    request<Application[]>("/api/v1/applications"),
+
+  updateStatus: (id: string, status: string) =>
+    request<Application>(
+      `/api/v1/applications/${id}/status`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      }
+    ),
+};
