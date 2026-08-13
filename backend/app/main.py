@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from app.api.v1 import analytics, applications, auth, health, jobs, organizations, screening
+from app.api.v1 import analytics, applications, audit, auth, health, jobs, operations, organizations, screening, screening_bulk
 from app.core.config import settings
 
 @asynccontextmanager
@@ -41,3 +41,6 @@ app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(applications.router, prefix="/api/v1")
 app.include_router(screening.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
+app.include_router(audit.router, prefix="/api/v1")
+app.include_router(operations.router, prefix="/api/v1")
+app.include_router(screening_bulk.router, prefix="/api/v1")

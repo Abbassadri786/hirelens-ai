@@ -19,50 +19,51 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
-const PUBLIC_ROUTES = ["/", "/login", "/signin", "/signup"];
+
+const PUBLIC_ROUTES = ["/login", "/signin", "/signup"];
 
 function isPublicRoute(pathname: string) {
   return PUBLIC_ROUTES.some(
-    (route) => pathname === route || pathname.startsWith(`${route}/`),
+    (route) => pathname === route || pathname.startsWith(`${route}/`)
   );
+}
+
+function getStatus(error: unknown): number | undefined {
+  if (typeof error === "object" && error !== null && "status" in error) {
+    const value = (error as { status?: unknown }).status;
+    return typeof value === "number" ? value : undefined;
+  }
+  return undefined;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-
-  // Prevent duplicate concurrent auth requests.
   const checkingRef = useRef(false);
 
   const redirectToLogin = useCallback(
     (currentPath: string) => {
-      // CHANGE THIS ONLY if your actual page is /signin.
       const loginPath = "/login";
-
-      const next = encodeURIComponent(currentPath || "/");
-
-      router.replace(`${loginPath}?next=${next}`);
+      router.replace(
+        `${loginPath}?next=${encodeURIComponent(currentPath || "/")}`
+      );
     },
-    [router],
+    [router]
   );
 
   useEffect(() => {
     let alive = true;
+
     if (isPublicRoute(pathname)) {
       setUser(null);
       setLoading(false);
-
       return () => {
         alive = false;
       };
     }
 
-    /*
-     * Don't start another auth check while one is already running.
-     */
     if (checkingRef.current) {
       return () => {
         alive = false;
@@ -75,37 +76,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async function checkAuth() {
       try {
         const current = await api.me();
+        if (alive) setUser(current);
+      } catch (error) {
+        if (!alive) return;
 
-        if (!alive) {
-          return;
-        }
-
-        setUser(current);
-      } catch (error: unknown) {
-        if (!alive) {
-          return;
-        }
-
-        const status =
-          typeof error === "object" && error !== null && "status" in error
-            ? Number((error as { status?: unknown }).status)
-            : undefined;
+        const status = getStatus(error);
 
         if (status === 401) {
           setUser(null);
-
           redirectToLogin(pathname);
-
-          return;
+        } else {
+          console.error("Auth check failed:", error);
+          setUser(null);
         }
-        console.error("Authentication check failed:", error);
-
-        setUser(null);
       } finally {
-        if (alive) {
-          setLoading(false);
-        }
-
+        if (alive) setLoading(false);
         checkingRef.current = false;
       }
     }
@@ -118,7 +103,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [pathname, redirectToLogin]);
 
   const refreshUser = useCallback(async () => {
-    // Don't check authentication from public pages.
     if (isPublicRoute(pathname)) {
       setUser(null);
       return null;
@@ -126,36 +110,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     try {
       const current = await api.me();
-
       setUser(current);
-
       return current;
-    } catch (error: unknown) {
-      const status =
-        typeof error === "object" && error !== null && "status" in error
-          ? Number((error as { status?: unknown }).status)
-          : undefined;
-
-      if (status === 401) {
+    } catch (error) {
+      if (getStatus(error) === 401) {
         setUser(null);
-
         redirectToLogin(pathname);
       } else {
         console.error("refreshUser failed:", error);
       }
-
       return null;
     }
   }, [pathname, redirectToLogin]);
 
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        loading,
-        refreshUser,
-      }}
-    >
+    <AuthContext.Provider value={{ user, loading, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );
@@ -163,10 +132,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export function useAuth() {
   const value = useContext(AuthContext);
-
-  if (!value) {
-    throw new Error("useAuth must be used inside AuthProvider");
-  }
-
+  if (!value) throw new Error("useAuth must be used inside AuthProvider");
   return value;
 }

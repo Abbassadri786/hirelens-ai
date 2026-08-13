@@ -9,27 +9,13 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
 
   if (loading) {
     return (
-      <Box
-        sx={{
-          minHeight: "70vh",
-          display: "grid",
-          placeItems: "center",
-        }}
-      >
+      <Box sx={{ minHeight: "70vh", display: "grid", placeItems: "center" }}>
         <CircularProgress />
       </Box>
     );
   }
 
-  /*
-   * AuthProvider is responsible for redirecting
-   * when /auth/me returns 401.
-   *
-   * Do NOT redirect from here again.
-   */
-  if (!user) {
-    return null;
-  }
+  if (!user) return null;
 
   return <>{children}</>;
 }
