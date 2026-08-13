@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AppThemeProvider } from "@/components/AppThemeProvider";
+import AuthGate from "@/components/auth/AuthGate";
 
 export const metadata: Metadata = {
   title: "HireLens AI",
@@ -14,7 +15,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <AppThemeProvider>{children}</AppThemeProvider>
+        <AuthGate>
+          <AppThemeProvider>{children}</AppThemeProvider>
+        </AuthGate>
       </body>
     </html>
   );

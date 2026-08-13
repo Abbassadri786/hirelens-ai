@@ -43,17 +43,33 @@ async function request<T>(
   });
 
   if (!response.ok) {
-    let message = "Request failed";
-    try {
-      const body = await response.json();
-      message = body.detail ?? message;
-    } catch {
-      // Keep generic message for non-JSON errors.
-    }
-    throw new Error(message);
+    const body = await response
+      .json()
+      .catch(() => ({}));
+
+    throw new ApiError(
+      response.status,
+      body.detail ??
+        response.statusText ??
+        "Request failed"
+    );
   }
 
   return response.json() as Promise<T>;
+}
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(
+    status: number,
+    message: string
+  ) {
+    super(message);
+
+    this.name = "ApiError";
+    this.status = status;
+  }
 }
 
 export const api = {
