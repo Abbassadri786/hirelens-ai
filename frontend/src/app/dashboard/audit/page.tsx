@@ -1,51 +1,11 @@
 "use client";
-
 import { useEffect, useState } from "react";
-import { Alert, Card, CardContent, Container, Divider, Stack, Typography } from "@mui/material";
-import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
-import { auditApi, AuditEvent } from "@/lib/api-phase5-8";
+import { Alert, Card, CardContent, Chip, Divider, Stack, Typography } from "@mui/material";
+import { auditApi } from "@/api/audit";
+import type { AuditEvent } from "@/types/domain";
+import { PageHeader } from "@/components/common/PageHeader";
+import { PageSkeleton } from "@/components/common/LoadingState";
+import { formatDateTime, titleCase } from "@/lib/format";
 
-function Content() {
-  const [events, setEvents] = useState<AuditEvent[]>([]);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    auditApi.list()
-      .then(setEvents)
-      .catch(e => setError(e instanceof Error ? e.message : "Unable to load audit events"));
-  }, []);
-
-  return (
-    <Container maxWidth="lg" sx={{ py: 5 }}>
-      <Typography variant="overline" color="primary" fontWeight={800}>Compliance</Typography>
-      <Typography variant="h2" fontWeight={850}>Audit trail</Typography>
-      <Typography color="text.secondary" sx={{ mb: 3 }}>
-        Screening actions are recorded for traceability. Do not use these logs as an automated hiring decision.
-      </Typography>
-      {error && <Alert severity="error">{error}</Alert>}
-      <Card sx={{ borderRadius: 4, mt: 3 }}>
-        <CardContent>
-          <Stack divider={<Divider />} spacing={2}>
-            {events.map(event => (
-              <div key={event.id}>
-                <Typography fontWeight={800}>{event.event_type}</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {event.entity_type} · {new Date(event.created_at).toLocaleString()}
-                </Typography>
-                {Object.keys(event.metadata).length > 0 && (
-                  <Typography variant="caption">
-                    {JSON.stringify(event.metadata)}
-                  </Typography>
-                )}
-              </div>
-            ))}
-          </Stack>
-        </CardContent>
-      </Card>
-    </Container>
-  );
-}
-
-export default function Page() {
-  return <ProtectedRoute><Content /></ProtectedRoute>;
-}
+export default function AuditPage() { const [events,setEvents]=useState<AuditEvent[]>([]); const [loading,setLoading]=useState(true); const [error,setError]=useState(""); useEffect(()=>{auditApi.list().then(setEvents).catch(e=>setError(e instanceof Error?e.message:"Unable to load audit trail")).finally(()=>setLoading(false));},[]); return <Stack spacing={3}><PageHeader eyebrow="Governance" title="Audit trail" description="Trace screening operations and recruiter actions for operational accountability." />{loading?<PageSkeleton rows={6}/>:error?<Alert severity="error">{error}</Alert>:<Card><CardContent sx={{p:0}}>{events.length===0?<Typography color="text.secondary" sx={{p:4}}>No audit events recorded yet.</Typography>:<Stack divider={<Divider/>}>{events.map(event=><Stack key={event.id} direction={{xs:"column",md:"row"}} spacing={2} sx={{p:2.5}}><BoxEvent event={event}/></Stack>)}</Stack>}</CardContent></Card>}</Stack>; }
+function BoxEvent({event}:{event:AuditEvent}) { return <><Stack direction="row" spacing={1} alignItems="center" sx={{minWidth:{md:230}}}><Chip size="small" label={titleCase(event.event_type)} variant="outlined"/><Typography variant="caption" color="text.secondary">{formatDateTime(event.created_at)}</Typography></Stack><Stack sx={{flex:1}}><Typography fontWeight={750}>{titleCase(event.entity_type)}</Typography><Typography variant="caption" color="text.secondary">{event.entity_id ?? "Workspace event"}</Typography></Stack><Typography variant="caption" color="text.secondary" sx={{maxWidth:480,overflow:"hidden",textOverflow:"ellipsis"}}>{Object.keys(event.metadata).length ? JSON.stringify(event.metadata) : "No additional metadata"}</Typography></>; }
