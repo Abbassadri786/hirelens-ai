@@ -1,4 +1,3 @@
-````markdown
 # HireLens AI
 
 ### Explainable AI-Powered Recruitment Screening Workspace
@@ -65,7 +64,6 @@ Keyword Match     Semantic Match
                │
                ▼
         Human Decision
-````
 
 ---
 
