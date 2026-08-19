@@ -1,6 +1,8 @@
+from __future__ import annotations
+
+import logging
 import secrets
-from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from sqlalchemy import select
@@ -8,253 +10,256 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, DbSession, require_csrf
 from app.core.config import settings
+from app.core.rate_limit import auth_rate_limit
 from app.core.security import (
-    ACCESS_COOKIE,
     REFRESH_COOKIE,
+    TokenError,
     clear_auth_cookies,
-    create_token,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    dummy_password_hash,
     hash_password,
     hash_refresh_token,
     issue_auth_cookies,
+    issue_csrf_cookie,
     verify_password,
 )
-from app.models.organization import Organization, OrganizationMember
+from app.models.audit_event import AuditEventType
+from app.models.organization import Organization
 from app.models.refresh_token import RefreshToken
 from app.models.user import User, UserRole
-from app.schemas.auth import (
-    LoginRequest,
-    OrganizationResponse,
-    RegisterRequest,
-    UserResponse,
+from app.schemas.auth import LoginRequest, RegisterRequest, UserResponse
+from app.services.audit_service import record_event
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    prefix="/auth",
+    tags=["Authentication"],
+    dependencies=[Depends(auth_rate_limit)],
 )
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+INVALID_CREDENTIALS = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="Invalid email or password",
+)
 
 
 def slugify(value: str) -> str:
+    """URL-safe organization slug."""
     base = "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-")
-    return "-".join(part for part in base.split("-") if part)[:170] or "organization"
+    return "-".join(part for part in base.split("-") if part)[:70] or "organization"
 
 
-def build_tokens(user: User, membership: OrganizationMember) -> tuple[str, str, datetime]:
-    access = create_token(
+def _issue_session(db: Session, response: Response, user: User) -> None:
+    """Mint an access/refresh pair, persist the refresh hash, set cookies."""
+    access_token = create_access_token(
         user_id=user.id,
-        token_type="access",
-        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_MINUTES),
-        organization_id=membership.organization_id,
-        role=membership.role.value,
+        organization_id=user.organization_id,
+        role=user.role.value,
     )
-    refresh = create_token(
-        user_id=user.id,
-        token_type="refresh",
-        expires_delta=timedelta(days=settings.REFRESH_TOKEN_DAYS),
+    refresh_token = create_refresh_token(user_id=user.id)
+
+    db.add(
+        RefreshToken(
+            user_id=user.id,
+            token_hash=hash_refresh_token(refresh_token),
+            expires_at=datetime.now(UTC)
+            + timedelta(days=settings.REFRESH_TOKEN_DAYS),
+        )
     )
-    expires = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_DAYS)
-    return access, refresh, expires
+
+    issue_auth_cookies(response, access_token=access_token, refresh_token=refresh_token)
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(payload: RegisterRequest, response: Response, db: DbSession):
+@router.post(
+    "/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED
+)
+def register(
+    payload: RegisterRequest, response: Response, db: DbSession
+) -> UserResponse:
+    """Create an organization and its first admin user."""
     email = payload.email.lower().strip()
 
-    if db.scalar(select(User).where(User.email == email)):
-        raise HTTPException(status_code=409, detail="Email is already registered")
+    if db.scalar(select(User.id).where(User.email == email)):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Email is already registered"
+        )
 
     slug = slugify(payload.organization_name)
-    if db.scalar(select(Organization).where(Organization.slug == slug)):
+    if db.scalar(select(Organization.id).where(Organization.slug == slug)):
         slug = f"{slug}-{secrets.token_hex(3)}"
+
+    organization = Organization(name=payload.organization_name.strip(), slug=slug)
+    db.add(organization)
+    db.flush()
 
     user = User(
         email=email,
         full_name=payload.full_name.strip(),
         password_hash=hash_password(payload.password),
-    )
-    organization = Organization(name=payload.organization_name.strip(), slug=slug)
-    db.add_all([user, organization])
-    db.flush()
-
-    membership = OrganizationMember(
         organization_id=organization.id,
-        user_id=user.id,
         role=UserRole.ORGANIZATION_ADMIN,
     )
-    db.add(membership)
+    db.add(user)
     db.flush()
 
-    access, refresh, expires = build_tokens(user, membership)
-    db.add(
-        RefreshToken(
-            user_id=user.id,
-            token_hash=hash_refresh_token(refresh),
-            expires_at=expires,
-        )
+    _issue_session(db, response, user)
+    record_event(
+        db,
+        event_type=AuditEventType.USER_REGISTERED,
+        entity_type="user",
+        entity_id=user.id,
+        organization_id=organization.id,
+        actor_user_id=user.id,
     )
     db.commit()
 
-    issue_auth_cookies(response, access_token=access, refresh_token=refresh)
-    return UserResponse(
-        id=user.id,
-        email=user.email,
-        full_name=user.full_name,
-        role=membership.role,
-    )
+    logger.info("Registered organization %s", organization.slug)
+    return UserResponse.model_validate(user)
 
 
 @router.post("/login", response_model=UserResponse)
-def login(payload: LoginRequest, response: Response, db: DbSession):
+def login(
+    payload: LoginRequest, response: Response, db: DbSession
+) -> UserResponse:
+    """Authenticate and start a session."""
     email = payload.email.lower().strip()
     user = db.scalar(select(User).where(User.email == email))
 
-    if not user or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if user is None:
+        # Verify against a throwaway hash so the "no such user" branch costs the
+        # same as a real failed verification. Without this, response latency
+        # discloses whether an address is registered.
+        verify_password(payload.password, dummy_password_hash())
+        record_event(
+            db,
+            event_type=AuditEventType.USER_LOGIN_FAILED,
+            entity_type="user",
+            metadata={"reason": "unknown_email"},
+        )
+        db.commit()
+        raise INVALID_CREDENTIALS
+
+    if not verify_password(payload.password, user.password_hash):
+        record_event(
+            db,
+            event_type=AuditEventType.USER_LOGIN_FAILED,
+            entity_type="user",
+            entity_id=user.id,
+            organization_id=user.organization_id,
+            metadata={"reason": "bad_password"},
+        )
+        db.commit()
+        raise INVALID_CREDENTIALS
 
     if not user.is_active:
-        raise HTTPException(status_code=403, detail="Account is disabled")
-
-    membership = db.scalar(
-        select(OrganizationMember)
-        .where(OrganizationMember.user_id == user.id)
-        .order_by(OrganizationMember.created_at.asc())
-        .limit(1)
-    )
-    if not membership:
-        raise HTTPException(status_code=403, detail="No organization membership")
-
-    access, refresh, expires = build_tokens(user, membership)
-    db.add(
-        RefreshToken(
-            user_id=user.id,
-            token_hash=hash_refresh_token(refresh),
-            expires_at=expires,
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled"
         )
+
+    _issue_session(db, response, user)
+    record_event(
+        db,
+        event_type=AuditEventType.USER_LOGGED_IN,
+        entity_type="user",
+        entity_id=user.id,
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
     )
     db.commit()
 
-    issue_auth_cookies(response, access_token=access, refresh_token=refresh)
-    return UserResponse(
-        id=user.id,
-        email=user.email,
-        full_name=user.full_name,
-        role=membership.role,
-    )
+    return UserResponse.model_validate(user)
 
 
 @router.get("/csrf")
-def csrf(response: Response):
-    import secrets
+def csrf(response: Response) -> dict[str, str]:
+    """Issue a CSRF token for a client with no session yet.
 
-    from app.core.security import CSRF_COOKIE
-
-    token = secrets.token_urlsafe(32)
-    response.set_cookie(
-        CSRF_COOKIE,
-        token,
-        max_age=settings.REFRESH_TOKEN_DAYS * 24 * 60 * 60,
-        httponly=False,
-        secure=settings.COOKIE_SECURE,
-        samesite=settings.COOKIE_SAMESITE,
-        domain=settings.COOKIE_DOMAIN,
-        path='/',
-    )
-    return {'message': 'CSRF token initialized'}
+    Needed by the public application form, which posts without being logged in.
+    """
+    issue_csrf_cookie(response)
+    return {"message": "CSRF token initialized"}
 
 
-@router.post("/refresh", response_model=UserResponse, dependencies=[Depends(require_csrf)])
+@router.post(
+    "/refresh",
+    response_model=UserResponse,
+    dependencies=[Depends(require_csrf)],
+)
 def refresh(
     response: Response,
     db: DbSession,
     refresh_cookie: str | None = Cookie(default=None, alias=REFRESH_COOKIE),
-):
+) -> UserResponse:
+    """Rotate the refresh token and issue a new access token."""
     if not refresh_cookie:
-        raise HTTPException(status_code=401, detail="Refresh session not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh session not found",
+        )
 
     try:
-        from app.core.security import decode_token
-        payload = decode_token(refresh_cookie)
-        if payload.get("type") != "refresh":
-            raise ValueError("Wrong token type")
-        user_id = UUID(payload["sub"])
-    except (ValueError, KeyError):
-        raise HTTPException(status_code=401, detail="Invalid refresh session")
+        claims = decode_token(refresh_cookie, expected_type="refresh")
+    except TokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh session",
+        ) from exc
 
     token_record = db.scalar(
-        select(RefreshToken)
-        .where(
+        select(RefreshToken).where(
             RefreshToken.token_hash == hash_refresh_token(refresh_cookie),
             RefreshToken.revoked_at.is_(None),
         )
     )
-    if not token_record or token_record.expires_at <= datetime.now(timezone.utc):
-        raise HTTPException(status_code=401, detail="Refresh session expired")
 
-    user = db.get(User, user_id)
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="User is inactive")
-
-    membership = db.scalar(
-        select(OrganizationMember)
-        .where(OrganizationMember.user_id == user.id)
-        .order_by(OrganizationMember.created_at.asc())
-        .limit(1)
-    )
-    if not membership:
-        raise HTTPException(status_code=403, detail="No organization membership")
-
-    # Rotate the refresh token so a stolen token cannot be replayed indefinitely.
-    token_record.revoked_at = datetime.now(timezone.utc)
-    access, new_refresh, expires = build_tokens(user, membership)
-    db.add(
-        RefreshToken(
-            user_id=user.id,
-            token_hash=hash_refresh_token(new_refresh),
-            expires_at=expires,
+    if token_record is None or token_record.expires_at <= datetime.now(UTC):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh session expired",
         )
-    )
+
+    if token_record.user_id != claims.user_id:
+        # The signed subject and the stored row disagree; treat as tampering.
+        logger.error("Refresh token subject mismatch for %s", token_record.user_id)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh session",
+        )
+
+    user = db.get(User, claims.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User is inactive",
+        )
+
+    # Rotate: revoke the presented token so a stolen copy cannot be replayed.
+    token_record.revoked_at = datetime.now(UTC)
+    _issue_session(db, response, user)
     db.commit()
 
-    issue_auth_cookies(response, access_token=access, refresh_token=new_refresh)
-    return UserResponse(
-        id=user.id,
-        email=user.email,
-        full_name=user.full_name,
-        role=membership.role,
-    )
+    return UserResponse.model_validate(user)
 
 
 @router.post("/logout", dependencies=[Depends(require_csrf)])
 def logout(
-    response: Response,
-    db: DbSession,
-    current_user: CurrentUser,
-):
-    # Revoke every active refresh session for this user.
-    now = datetime.now(timezone.utc)
+    response: Response, db: DbSession, current_user: CurrentUser
+) -> dict[str, str]:
+    """Revoke every active refresh session for the caller."""
     db.query(RefreshToken).filter(
         RefreshToken.user_id == current_user.id,
         RefreshToken.revoked_at.is_(None),
-    ).update({"revoked_at": now}, synchronize_session=False)
+    ).update({"revoked_at": datetime.now(UTC)}, synchronize_session=False)
     db.commit()
+
     clear_auth_cookies(response)
     return {"message": "Logged out successfully"}
 
 
 @router.get("/me", response_model=UserResponse)
-def me(
-    current_user: CurrentUser,
-    db: DbSession,
-):
-    membership = db.scalar(
-        select(OrganizationMember)
-        .where(OrganizationMember.user_id == current_user.id)
-        .order_by(OrganizationMember.created_at.asc())
-        .limit(1)
-    )
-    if not membership:
-        raise HTTPException(status_code=403, detail="No organization membership")
-
-    return UserResponse(
-        id=current_user.id,
-        email=current_user.email,
-        full_name=current_user.full_name,
-        role=membership.role,
-    )
+def me(current_user: CurrentUser) -> UserResponse:
+    """Return the authenticated user."""
+    return UserResponse.model_validate(current_user)

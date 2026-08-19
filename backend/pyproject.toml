@@ -1,0 +1,51 @@
+# backend/pyproject.toml
+
+[project]
+name = "hirelens-api"
+version = "1.0.0"
+description = "HireLens AI - multi-agent resume screening API"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+# `pythonpath = ["."]` lets `from app...` resolve without an editable install.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    "error::DeprecationWarning",
+    # Starlette warns about its httpx-based TestClient. Matched by message
+    # rather than by class, because the warning class lives at a different
+    # import path across Starlette versions.
+    "default:Using 'httpx' with `starlette.testclient`:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle
+    "F",     # pyflakes - catches the undefined names this codebase had
+    "I",     # import sorting
+    "B",     # bugbear
+    "UP",    # pyupgrade
+    "S",     # bandit security rules
+    "ASYNC",
+]
+ignore = [
+    "S101",  # assert is expected in tests
+    "E501",  # long lines are handled by the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106"]        # hardcoded test passwords are fine
+"alembic/versions/*" = ["E402", "I001"]
+# B008 forbids function calls in argument defaults, but `Depends(...)`,
+# `Query(...)`, `File(...)` and `Form(...)` in defaults *are* FastAPI's dependency
+# declaration syntax. The rule cannot express that exception, so it is disabled
+# for the routing layer only.
+"app/api/*" = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]

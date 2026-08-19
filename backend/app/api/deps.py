@@ -1,22 +1,39 @@
+"""FastAPI request dependencies: authentication, tenancy, authorization.
+
+A user belongs to one organization and carries their role, so authorization is a
+direct check against the authenticated user. There is no membership lookup:
+`current_user.organization_id` is the tenant, and `current_user.role` is the
+permission.
+"""
+
+from __future__ import annotations
+
+import logging
 from typing import Annotated
-from uuid import UUID
 
 from fastapi import Cookie, Depends, Header, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.security import ACCESS_COOKIE, CSRF_COOKIE, decode_token
+from app.core.security import (
+    ACCESS_COOKIE,
+    CSRF_COOKIE,
+    TokenError,
+    constant_time_compare,
+    decode_token,
+)
 from app.db.session import get_db
-from app.models.organization import OrganizationMember
 from app.models.user import User, UserRole
+
+logger = logging.getLogger(__name__)
 
 DbSession = Annotated[Session, Depends(get_db)]
 
 
 def get_current_user(
     db: DbSession,
-    access_cookie: str | None = Cookie(default=None, alias=ACCESS_COOKIE),
+    access_cookie: Annotated[str | None, Cookie(alias=ACCESS_COOKIE)] = None,
 ) -> User:
+    """Resolve the authenticated user from the access cookie."""
     if not access_cookie:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -24,22 +41,20 @@ def get_current_user(
         )
 
     try:
-        payload = decode_token(access_cookie)
-        if payload.get("type") != "access":
-            raise ValueError("Wrong token type")
-        user_id = UUID(payload["sub"])
-    except (ValueError, KeyError):
+        claims = decode_token(access_cookie, expected_type="access")
+    except TokenError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication session",
-        )
+        ) from exc
 
-    user = db.get(User, user_id)
-    if not user or not user.is_active:
+    user = db.get(User, claims.user_id)
+    if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User is inactive or no longer exists",
         )
+
     return user
 
 
@@ -47,46 +62,45 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
 def require_csrf(
-    csrf_cookie: str | None = Cookie(default=None, alias=CSRF_COOKIE),
-    csrf_header: str | None = Header(default=None, alias="X-CSRF-Token"),
+    csrf_cookie: Annotated[str | None, Cookie(alias=CSRF_COOKIE)] = None,
+    csrf_header: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
 ) -> None:
-    if not csrf_cookie or not csrf_header or csrf_cookie != csrf_header:
+    """Double-submit CSRF check, compared in constant time."""
+    if not constant_time_compare(csrf_cookie, csrf_header):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="CSRF validation failed",
         )
 
 
-def get_membership(
-    db: DbSession,
-    user: CurrentUser,
-) -> OrganizationMember:
-    membership = db.scalar(
-        select(OrganizationMember)
-        .where(OrganizationMember.user_id == user.id)
-        .order_by(OrganizationMember.created_at.asc())
-        .limit(1)
-    )
-    if not membership:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No organization membership",
-        )
-    return membership
-
-
-Membership = Annotated[OrganizationMember, Depends(get_membership)]
-
-
 def require_roles(*roles: UserRole):
-    def dependency(
-        membership: Membership,
-    ) -> OrganizationMember:
-        if membership.role not in roles:
+    """Build a dependency that authorizes the caller's role."""
+    allowed = frozenset(roles)
+
+    def dependency(user: CurrentUser) -> User:
+        if user.role not in allowed:
+            logger.warning(
+                "Authorization denied for %s (role=%s)", user.id, user.role.value
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Insufficient permissions",
             )
-        return membership
+        return user
 
     return dependency
+
+
+# Roles permitted to work with recruitment data.
+STAFF_ROLES: tuple[UserRole, ...] = (
+    UserRole.ORGANIZATION_ADMIN,
+    UserRole.RECRUITER,
+    UserRole.HIRING_MANAGER,
+)
+
+require_staff = require_roles(*STAFF_ROLES)
+require_admin = require_roles(UserRole.ORGANIZATION_ADMIN)
+
+# Injects the authenticated staff user, having already authorized the role.
+StaffUser = Annotated[User, Depends(require_staff)]
+AdminUser = Annotated[User, Depends(require_admin)]

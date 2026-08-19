@@ -1,76 +1,91 @@
-import re
-from pathlib import Path
+"""Application endpoints, including the public apply form."""
+
+from __future__ import annotations
+
+import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
-from app.api.deps import DbSession, Membership, require_csrf, require_roles
+from app.api.deps import DbSession, StaffUser, require_csrf, require_staff
+from app.core.rate_limit import upload_rate_limit
 from app.models.application import Application, ApplicationStatus
+from app.models.audit_event import AuditEventType
 from app.models.candidate import Candidate
 from app.models.job import Job, JobStatus
 from app.models.resume import Resume, ResumeStatus
-from app.models.user import UserRole
 from app.schemas.applications import (
     ApplicationResponse,
     ApplicationStatusUpdate,
     CandidateResponse,
+    PublicApplicationForm,
     ResumeResponse,
 )
-from app.services.file_storage import save_resume
-from app.services.resume_parser import extract_resume_text
+from app.services.audit_service import record_event
+from app.services.file_storage import delete_stored_resume, save_resume
+from app.services.resume_parser import ResumeParseError, extract_resume_text
 from app.services.tenant import get_org_application
 
-router = APIRouter(prefix='/applications', tags=['Applications'])
+logger = logging.getLogger(__name__)
 
-ROLES = (
-    UserRole.ORGANIZATION_ADMIN,
-    UserRole.RECRUITER,
-    UserRole.HIRING_MANAGER,
-)
+router = APIRouter(prefix="/applications", tags=["Applications"])
 
 
-def clean(v, limit):
-    return v.replace('\x00', '').strip()[:limit] if v else None
-
-
-def email(v):
-    v = v.strip().lower()
-    if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', v):
-        raise HTTPException(422, 'Invalid candidate email')
-    return v
-
-
-def out(a):
+def _to_response(application: Application) -> ApplicationResponse:
     return ApplicationResponse(
-        id=a.id,
-        job_id=a.job_id,
-        candidate_id=a.candidate_id,
-        resume_id=a.resume_id,
-        status=a.status.value,
-        submitted_at=a.submitted_at,
-        candidate=CandidateResponse.model_validate(a.candidate),
-        resume=ResumeResponse.model_validate(a.resume),
+        id=application.id,
+        job_id=application.job_id,
+        candidate_id=application.candidate_id,
+        resume_id=application.resume_id,
+        status=application.status.value,
+        submitted_at=application.submitted_at,
+        candidate=CandidateResponse.model_validate(application.candidate),
+        resume=ResumeResponse.model_validate(application.resume),
+    )
+
+
+def _load_with_relations(db: DbSession, application_id: UUID) -> Application | None:
+    return db.scalar(
+        select(Application)
+        .options(
+            joinedload(Application.candidate),
+            joinedload(Application.resume),
+        )
+        .where(Application.id == application_id)
     )
 
 
 @router.post(
-    '/public/jobs/{job_id}',
+    "/public/{job_id}",
     response_model=ApplicationResponse,
-    status_code=201,
-    dependencies=[Depends(require_csrf)],
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf), Depends(upload_rate_limit)],
 )
 async def apply(
     job_id: UUID,
     db: DbSession,
-    full_name: str = Form(..., min_length=2, max_length=160),
-    email_value: str = Form(..., alias='email', max_length=320),
-    phone: str | None = Form(None, max_length=40),
-    location: str | None = Form(None, max_length=180),
-    cover_letter: str | None = Form(None, max_length=10000),
+    full_name: str = Form(..., min_length=2, max_length=120),
+    email: str = Form(..., alias="email", max_length=255),
+    phone: str | None = Form(None, max_length=30),
+    location: str | None = Form(None, max_length=120),
+    cover_letter: str | None = Form(None, max_length=5_000),
     resume_file: UploadFile = File(...),
-):
+) -> ApplicationResponse:
+    """Submit an application to a published, public job.
+
+    Multipart form fields are validated through `PublicApplicationForm` so the
+    same rules apply here as to any JSON endpoint.
+    """
+    form = PublicApplicationForm(
+        full_name=full_name,
+        email=email,
+        phone=phone,
+        location=location,
+        cover_letter=cover_letter,
+    )
+
     job = db.scalar(
         select(Job).where(
             Job.id == job_id,
@@ -78,58 +93,69 @@ async def apply(
             Job.is_public.is_(True),
         )
     )
-    if not job:
-        raise HTTPException(404, 'Published job not found')
+    if job is None:
+        # A tame response whether the job is missing, unpublished or private, so
+        # this cannot be used to probe for draft requisitions.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Published job not found"
+        )
 
-    candidate_email = email(email_value)
     candidate = db.scalar(
         select(Candidate).where(
             Candidate.organization_id == job.organization_id,
-            Candidate.email == candidate_email,
+            Candidate.email == form.email,
         )
     )
-    if not candidate:
+    if candidate is None:
         candidate = Candidate(
             organization_id=job.organization_id,
-            full_name=clean(full_name, 160) or 'Candidate',
-            email=candidate_email,
-            phone=clean(phone, 40),
-            location=clean(location, 180),
+            full_name=form.full_name,
+            email=form.email,
+            phone=form.phone,
+            location=form.location,
         )
         db.add(candidate)
         db.flush()
 
     existing = db.scalar(
-        select(Application).where(
+        select(Application.id).where(
             Application.job_id == job.id,
             Application.candidate_id == candidate.id,
         )
     )
     if existing:
-        raise HTTPException(409, 'Candidate has already applied to this job')
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Candidate has already applied to this job",
+        )
 
-    upload = await save_resume(resume_file)
+    stored = await save_resume(resume_file)
     try:
-        extracted = extract_resume_text(upload['path'], upload['file_type'])
+        extracted = extract_resume_text(stored.path, stored.file_type)
+    except ResumeParseError as exc:
+        # Do not leave an unreferenced file behind when the row is never created.
+        delete_stored_resume(stored.path)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     except Exception as exc:
-        Path(upload['path']).unlink(missing_ok=True)
-        raise HTTPException(422, 'Resume parsing failed') from exc
-
-    if not extracted.strip():
-        Path(upload['path']).unlink(missing_ok=True)
-        raise HTTPException(422, 'No readable text found in resume')
+        delete_stored_resume(stored.path)
+        logger.exception("Unexpected failure while parsing an uploaded resume")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Resume could not be processed",
+        ) from exc
 
     resume = Resume(
         organization_id=job.organization_id,
         candidate_id=candidate.id,
-        original_filename=upload['original_filename'],
-        stored_filename=upload['stored_filename'],
-        file_type=upload['file_type'],
-        mime_type=upload['mime_type'],
-        file_size=upload['file_size'],
-        sha256=upload['sha256'],
+        file_path=stored.path,
+        file_type=stored.file_type,
+        file_size_bytes=stored.file_size,
         status=ResumeStatus.PARSED,
-        extracted_text=extracted[:100000],
+        extracted_text=extracted,
+        # Stored so admin/recruiter views can display the original filename.
+        # Cleaned on model.
     )
     db.add(resume)
     db.flush()
@@ -139,28 +165,45 @@ async def apply(
         job_id=job.id,
         candidate_id=candidate.id,
         resume_id=resume.id,
-        cover_letter=clean(cover_letter, 10000),
+        cover_letter=form.cover_letter,
     )
     db.add(application)
+    db.flush()
+
+    record_event(
+        db,
+        event_type=AuditEventType.APPLICATION_SUBMITTED,
+        entity_type="application",
+        entity_id=application.id,
+        organization_id=job.organization_id,
+        metadata={"job_id": str(job.id), "resume_bytes": stored.file_size},
+    )
+
     db.commit()
 
-    result = db.scalar(
-        select(Application)
-        .options(
-            joinedload(Application.candidate),
-            joinedload(Application.resume),
+    created = _load_with_relations(db, application.id)
+    if created is None: # pragma: no cover - just committed
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Application could not be loaded after creation",
         )
-        .where(Application.id == application.id)
-    )
-    return out(result)
+    return _to_response(created)
 
 
 @router.get(
-    '',
+    "",
     response_model=list[ApplicationResponse],
-    dependencies=[Depends(require_roles(*ROLES))],
+    dependencies=[Depends(require_staff)],
 )
-def list_applications(db: DbSession, membership: Membership):
+def list_applications(
+    db: DbSession,
+    user: StaffUser,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[ApplicationResponse]:
+    """List applications for the active tenant, newest first."""
+    bounded_limit = max(1, min(limit, 200))
+
     items = (
         db.scalars(
             select(Application)
@@ -168,23 +211,25 @@ def list_applications(db: DbSession, membership: Membership):
                 joinedload(Application.candidate),
                 joinedload(Application.resume),
             )
-            .where(Application.organization_id == membership.organization_id)
+            .where(Application.organization_id == user.organization_id)
             .order_by(Application.submitted_at.desc())
+            .limit(bounded_limit)
+            .offset(max(0, offset))
         )
         .unique()
         .all()
     )
-    return [out(x) for x in items]
+    return [_to_response(item) for item in items]
 
 
 @router.get(
-    '/{application_id}',
+    "/{application_id}",
     response_model=ApplicationResponse,
-    dependencies=[Depends(require_roles(*ROLES))],
+    dependencies=[Depends(require_staff)],
 )
 def get_application(
-    application_id: UUID, db: DbSession, membership: Membership
-):
+    application_id: UUID, db: DbSession, user: StaffUser
+) -> ApplicationResponse:
     item = db.scalar(
         select(Application)
         .options(
@@ -193,35 +238,53 @@ def get_application(
         )
         .where(
             Application.id == application_id,
-            Application.organization_id == membership.organization_id,
+            Application.organization_id == user.organization_id,
         )
     )
-    if not item:
-        raise HTTPException(404, 'Application not found')
-    return out(item)
+    if item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Application not found"
+        )
+    return _to_response(item)
 
 
 @router.patch(
-    '/{application_id}/status',
+    "/{application_id}/status",
     response_model=ApplicationResponse,
-    dependencies=[Depends(require_csrf), Depends(require_roles(*ROLES))],
+    dependencies=[Depends(require_csrf), Depends(require_staff)],
 )
 def update_status(
     application_id: UUID,
     payload: ApplicationStatusUpdate,
     db: DbSession,
-    membership: Membership,
-):
-    item = get_org_application(db, application_id, membership.organization_id)
+    user: StaffUser,
+) -> ApplicationResponse:
+    """Move an application to a new status.
+
+    Audited with both the previous and new value: rejecting a candidate is
+    exactly the kind of decision that has to be reconstructable later.
+    """
+    item = get_org_application(db, application_id, user.organization_id)
+
+    previous = item.status.value
     item.status = ApplicationStatus(payload.status)
+
+    record_event(
+        db,
+        event_type=AuditEventType.APPLICATION_STATUS_CHANGED,
+        entity_type="application",
+        entity_id=item.id,
+        organization_id=user.organization_id,
+        actor_user_id=user.id,
+        metadata={"from": previous, "to": item.status.value},
+    )
+
     db.commit()
 
-    item = db.scalar(
-        select(Application)
-        .options(
-            joinedload(Application.candidate),
-            joinedload(Application.resume),
+    updated = _load_with_relations(db, item.id)
+    if updated is None: # pragma: no cover - just committed
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Application could not be reloaded",
         )
-        .where(Application.id == item.id)
-    )
-    return out(item)
+    return _to_response(updated)
