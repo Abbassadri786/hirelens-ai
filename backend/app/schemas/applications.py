@@ -82,7 +82,8 @@ class ResumeResponse(BaseModel):
     id: UUID
     original_filename: str
     file_type: str
-    file_size_int: int
+    mime_type: str
+    file_size: int
     status: str
     created_at: datetime
 

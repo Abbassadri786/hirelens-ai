@@ -22,7 +22,6 @@ class ScreeningResultResponse(BaseModel):
     # Pipeline metadata behind this result.
     provider: str
     model_name: str
-    pipeline_latency_ms: int
     pipeline_version: str
 
     # Evidence behind the score.
@@ -32,7 +31,6 @@ class ScreeningResultResponse(BaseModel):
     strengths: list[str]
     concerns: list[str]
     improvement_suggestions: list[str]
-    candidate_level: str
     explanation: str
     resume_sections: dict[str, str]
 

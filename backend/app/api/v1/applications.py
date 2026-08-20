@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -149,13 +150,10 @@ async def apply(
     resume = Resume(
         organization_id=job.organization_id,
         candidate_id=candidate.id,
-        file_path=stored.path,
-        file_type=stored.file_type,
-        file_size_bytes=stored.file_size,
+        **stored.as_model_kwargs(),
         status=ResumeStatus.PARSED,
         extracted_text=extracted,
-        # Stored so admin/recruiter views can display the original filename.
-        # Cleaned on model.
+        parsed_at=datetime.now(timezone.utc),
     )
     db.add(resume)
     db.flush()

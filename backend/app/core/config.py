@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     RATE_LIMIT_SCREENING_PER_MINUTE: int = Field(default=20, ge=1)
     RATE_LIMIT_UPLOAD_PER_MINUTE: int = Field(default=10, ge=1)
     RATE_LIMIT_GENERAL_PER_MINUTE: int = Field(default=60, ge=1)
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_AUTH_PER_MINUTE: int = 20
+    RATE_LIMIT_SCREENING_PER_MINUTE: int = 60
+    RATE_LIMIT_UPLOAD_PER_MINUTE: int = 20
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
 

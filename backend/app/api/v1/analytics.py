@@ -33,8 +33,14 @@ def overview(db: DbSession, user: StaffUser) -> AnalyticsOverview:
     org = user.organization_id
 
     total_jobs = (
-        db.scalar(select(func.count(Job.id)).where(Job.organization_id == org)) or 0
+        db.scalar(
+            select(func.count(Job.id)).where(
+                Job.organization_id == org
+            )
+        )
+        or 0
     )
+
     total_applications = (
         db.scalar(
             select(func.count(Application.id)).where(
@@ -48,51 +54,98 @@ def overview(db: DbSession, user: StaffUser) -> AnalyticsOverview:
     aggregate = db.execute(
         select(
             func.count(ScreeningResult.id),
-            func.coalesce(func.avg(ScreeningResult.overall_score), 0.0),
+            func.coalesce(
+                func.avg(ScreeningResult.overall_score),
+                0.0,
+            ),
             func.coalesce(
                 func.sum(
-                    case((ScreeningResult.recommendation == "STRONG_MATCH", 1), else_=0)
+                    case(
+                        (
+                            ScreeningResult.recommendation == "STRONG_MATCH",
+                            1,
+                        ),
+                        else_=0,
+                    )
                 ),
                 0,
             ),
             func.coalesce(
                 func.sum(
-                    case((ScreeningResult.recommendation == "REVIEW", 1), else_=0)
+                    case(
+                        (
+                            ScreeningResult.recommendation == "REVIEW",
+                            1,
+                        ),
+                        else_=0,
+                    )
                 ),
                 0,
             ),
             func.coalesce(
                 func.sum(
-                    case((ScreeningResult.recommendation == "LOW_MATCH", 1), else_=0)
+                    case(
+                        (
+                            ScreeningResult.recommendation == "LOW_MATCH",
+                            1,
+                        ),
+                        else_=0,
+                    )
                 ),
                 0,
             ),
             func.coalesce(
                 func.sum(
-                    case((ScreeningResult.bias_review_required.is_(True), 1), else_=0)
+                    case(
+                        (
+                            ScreeningResult.bias_review_required.is_(True),
+                            1,
+                        ),
+                        else_=0,
+                    )
                 ),
                 0,
             ),
-        ).where(ScreeningResult.organization_id == org)
+        ).where(
+            ScreeningResult.organization_id == org
+        )
     ).one()
 
     screened, average, strong, review, low, flagged = aggregate
 
+    # Normalize SQL values before building the Pydantic response.
+    screened = int(screened or 0)
+    average = float(average or 0.0)
+    strong = int(strong or 0)
+    review = int(review or 0)
+    low = int(low or 0)
+    flagged = int(flagged or 0)
+
+    # Applications which do not yet have a screening result.
+    pending_screening = max(
+        total_applications - screened,
+        0,
+    )
+
     return AnalyticsOverview(
         total_jobs=total_jobs,
         total_applications=total_applications,
-        screened_applications=screened or 0,
-        average_score=round(float(average), 2),
+        screened_applications=screened,
+        pending_screening=pending_screening,
+        average_score=round(average, 2),
         percentage_screened=(
-            round(screened / total_applications * 100, 2)
+            round(
+                screened / total_applications * 100,
+                2,
+            )
             if total_applications > 0
             else 0.0
         ),
-        bias_review_required=flagged or 0,
-        recommendation=RecommendationCounts(
-            strong_match=strong or 0,
-            review=review or 0,
-            low_match=low or 0,
+        bias_review_required=flagged,
+        recommendations=RecommendationCounts(
+            strong_match=strong,
+            review=review,
+            low_match=low,
         ),
     )
 
@@ -102,29 +155,42 @@ def overview(db: DbSession, user: StaffUser) -> AnalyticsOverview:
     response_model=ScoreDistribution,
     dependencies=[Depends(require_staff)],
 )
-def score_distribution(db: DbSession, user: StaffUser) -> ScoreDistribution:
+def score_distribution(
+    db: DbSession,
+    user: StaffUser,
+) -> ScoreDistribution:
     """Score histogram in ten-point buckets."""
     org = user.organization_id
 
-    # Bucket in SQL. Scores of exactly 100 would land in an eleventh bucket, so
-    # they are folded back into the 90-100 band.
+    # Bucket in SQL. Scores of exactly 100 would land in an eleventh
+    # bucket, so they are folded back into the 90-100 band.
     bucket_expr = func.least(
-        func.floor(ScreeningResult.overall_score / BUCKET_SIZE), 9
+        func.floor(
+            ScreeningResult.overall_score / BUCKET_SIZE
+        ),
+        9,
     )
 
     rows = db.execute(
-        select(bucket_expr.label("bucket"), func.count(ScreeningResult.id))
-        .where(ScreeningResult.organization_id == org)
+        select(
+            bucket_expr.label("bucket"),
+            func.count(ScreeningResult.id),
+        )
+        .where(
+            ScreeningResult.organization_id == org
+        )
         .group_by(bucket_expr)
         .order_by(bucket_expr)
     ).all()
 
-    counts = {int(bucket): count for bucket, count in rows}
+    counts = {
+        int(bucket): count
+        for bucket, count in rows
+    }
 
     return ScoreDistribution(
         buckets=[
             ScoreBucket(
-                lower_index=index,
                 lower=(index * BUCKET_SIZE),
                 upper=((index + 1) * BUCKET_SIZE),
                 count=counts.get(index, 0),
@@ -143,12 +209,17 @@ def score_distribution(db: DbSession, user: StaffUser) -> ScoreDistribution:
 def fairness_summary(
     db: DbSession,
     user: AdminUser,
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=200,
+    ),
 ) -> FairnessSummary:
     """Decisions the bias check escalated for human review.
 
-    Admin-only. Each entry names the application and the specific flags raised,
-    so a reviewer can act on it rather than only seeing that a count is non-zero.
+    Admin-only. Each entry names the application and the specific flags
+    raised, so a reviewer can act on it rather than only seeing that a
+    count is non-zero.
     """
     org = user.organization_id
 
@@ -161,8 +232,8 @@ def fairness_summary(
         or 0
     )
 
-    # Counted separately from the listing: len(items) would be capped by
-    # 'limit' and would under-report the true number of escalations.
+    # Count separately from the listing because `limit` should not
+    # affect the total flagged count.
     total_flagged = (
         db.scalar(
             select(func.count(ScreeningResult.id)).where(
@@ -177,7 +248,9 @@ def fairness_summary(
         db.scalars(
             select(ScreeningResult)
             .options(
-                joinedload(ScreeningResult.application).joinedload(
+                joinedload(
+                    ScreeningResult.application
+                ).joinedload(
                     Application.candidate
                 )
             )
@@ -185,7 +258,9 @@ def fairness_summary(
                 ScreeningResult.organization_id == org,
                 ScreeningResult.bias_review_required.is_(True),
             )
-            .order_by(ScreeningResult.created_at.desc())
+            .order_by(
+                ScreeningResult.created_at.desc()
+            )
             .limit(limit)
         )
         .unique()

@@ -61,7 +61,7 @@ def rate_limit(limiter: RateLimiter):
             return
 
         key = _identity(request)
-        if not limiter.allow(_identity(request)):
+        if not limiter.allow(key):
             logger.warning("Rate limit exceeded on %s", request.url.path)
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,

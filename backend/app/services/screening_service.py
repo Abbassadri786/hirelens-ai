@@ -189,7 +189,6 @@ def _persist(
     result.strengths = state.strengths
     result.concerns = state.concerns
     result.improvement_suggestions = state.improvement_suggestions
-    result.candidate_level = state.candidate_level
     result.explanation = state.explanation
     result.resume_sections = state.sections
 
