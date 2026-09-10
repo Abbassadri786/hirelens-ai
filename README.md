@@ -7,12 +7,12 @@ HireLens AI is an enterprise-inspired Applicant Tracking and AI-assisted Resume 
 Instead of treating AI as a black-box hiring decision maker, HireLens combines deterministic ATS scoring, semantic matching, resume parsing, PII redaction, explainable AI feedback, asynchronous screening, audit logging, and recruiter review into one workflow.
 
 > **AI assists the recruiter. It does not make the final hiring decision.**
-<img width="1910" height="944" alt="Screenshot 2026-09-10 123233" src="https://github.com/user-attachments/assets/2609310c-b28c-4c76-9da8-6c04f11581cd" />
-<img width="1668" height="882" alt="Screenshot 2026-09-10 123137" src="https://github.com/user-attachments/assets/e0ed5286-71d0-4082-9993-d1cd868dcf80" />
-<img width="1666" height="879" alt="Screenshot 2026-09-10 123037" src="https://github.com/user-attachments/assets/96acca0c-f2f0-4d8c-a8c7-bdd82a634c29" />
-<img width="1919" height="945" alt="Screenshot 2026-09-10 123013" src="https://github.com/user-attachments/assets/954318b0-e5a1-4792-92bb-0bb2755daba8" />
-<img width="1908" height="944" alt="Screenshot 2026-09-10 122950" src="https://github.com/user-attachments/assets/47c7322b-c805-467d-a5f0-f4072ff29bf5" />
 <img width="1908" height="939" alt="Screenshot 2026-09-10 122749" src="https://github.com/user-attachments/assets/821d9c6c-5d2b-4e95-9110-58989604b76c" />
+<img width="1908" height="944" alt="Screenshot 2026-09-10 122950" src="https://github.com/user-attachments/assets/47c7322b-c805-467d-a5f0-f4072ff29bf5" />
+<img width="1919" height="945" alt="Screenshot 2026-09-10 123013" src="https://github.com/user-attachments/assets/954318b0-e5a1-4792-92bb-0bb2755daba8" />
+<img width="1666" height="879" alt="Screenshot 2026-09-10 123037" src="https://github.com/user-attachments/assets/96acca0c-f2f0-4d8c-a8c7-bdd82a634c29" />
+<img width="1668" height="882" alt="Screenshot 2026-09-10 123137" src="https://github.com/user-attachments/assets/e0ed5286-71d0-4082-9993-d1cd868dcf80" />
+<img width="1910" height="944" alt="Screenshot 2026-09-10 123233" src="https://github.com/user-attachments/assets/2609310c-b28c-4c76-9da8-6c04f11581cd" />
 
 ---
 
